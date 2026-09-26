@@ -13,7 +13,7 @@ app, err := collage.New(&collage.Config{
 })
 ```
 
-Requires collage v0.23.0 or later.
+Requires collage v0.25.0 or later.
 
 ## Both lines
 
@@ -24,45 +24,56 @@ The one value is two things, and it is handed over as both:
   around each fragment — into OpenTelemetry spans. `SetAttribute` becomes a string
   attribute; `RecordError` records the error on the span and sets its status to
   `Error`.
-- **As a plugin** it wraps every request: the trace context in the request's
-  headers is read with the propagator, and the request's span is a **server span**
-  whose parent is the caller's.
+- **As a plugin** it starts every request's **server span**: the trace context in
+  the request's headers is read with the propagator, and the server span's parent
+  is the caller's.
 
 Each works alone. The tracer alone traces what collage does, a new trace per
 request. The plugin alone gives every request one server span continuing the
 caller's trace, and nothing inside it.
 
-## One server span per request
+## One trace per request
 
-collage opens `collage.http` before any middleware runs, and a plugin's middleware
-is the first code that can read the request's headers. A span cannot be re-parented
-once it has started. So when both halves are installed, `collage.http` is held when
-collage asks for it — its start time and the attributes collage gives it are kept —
-and started by the middleware, once the caller's context is known, as the server
-span, with its original start time. The render and every fragment nest under it:
+The plugin is a `collage.RequestHook`: its `OnRequest` runs before collage opens
+`collage.http`, before middleware and before routing. It reads the caller's trace
+context and starts the server span, and collage serves the request under the
+server span's context — so `collage.http` is its child, and the render and every
+fragment nest under that:
 
 ```
 GET /blog/{slug}          server   ← child of the caller's span
-└─ collage.render
-   ├─ collage.fragment
-   └─ collage.fragment
+└─ collage.http
+   └─ collage.render
+      ├─ collage.fragment
+      └─ collage.fragment
 ```
 
-A request the application's own middleware answers before the plugin's — a `401`
-from an auth check — still gets its span, as a trace of its own.
+A request the application's own middleware answers — a `401` from an auth check —
+is inside the server span too, because middleware runs after `OnRequest`.
 
-The span is named for the method, then renamed for the route once the page is
-resolved: `GET /blog/{slug}`, never `GET /blog/hello`, because a trace store groups
-by name and a name per URL is a group per URL.
+Once the response is written, collage hands the plugin the status, and the span is
+named for the route the request resolved to, from `collage.RouteOf`:
+`GET /blog/{slug}`, never `GET /blog/hello`, because a trace store groups by name
+and a name per URL is a group per URL. A request that resolved to nothing — a
+`404` — keeps the method as its name.
+
+| Route | `http.route` |
+| --- | --- |
+| a page | its pattern, with the locale prefix when the request had one: `/tr/blog/{slug}` |
+| a mount or a handler | its prefix: `/static/` |
+| a document or an action | its registered name: `feed` |
 
 | Attribute | |
 | --- | --- |
 | `http.request.method` | `GET` |
-| `http.route` | the page's pattern, with the locale prefix when the request had one |
+| `http.route` | as above |
 | `http.response.status_code` | `200` |
 | `url.path`, `url.scheme`, `user_agent.original` | from the request |
+| `collage.route.kind`, `collage.route.name` | what `collage.RouteOf` reports: `page` and `post`, `document` and `feed` |
 | `collage.page`, `collage.locale` | the page it resolved to |
-| `http.method`, `http.path`, `http.status_code` | what collage sets on `collage.http` itself |
+
+`collage.http` keeps what collage sets on it: `http.method`, `http.path`,
+`http.status_code`.
 
 A `5xx` sets the span's status to `Error`. A `4xx` does not: for a server it is the
 client's mistake.
@@ -119,7 +130,7 @@ otel.New(otel.Options{
 | --- | --- | --- |
 | `Tracer` | the global provider's tracer for `github.com/Elagoht/collage-otel` | Starts every span. Go only |
 | `Propagator` | `otel.GetTextMapPropagator()` | Reads the caller's context from the headers. Go only |
-| `Skip` (`skip`) | none | Path prefixes the middleware does not trace |
+| `Skip` (`skip`) | none | Path prefixes that get no server span |
 
 `NewTracer(tracer)` is `New(Options{Tracer: tracer})`. A skipped request's
 `collage.http` is still started, as a trace of its own, when this package is
@@ -140,13 +151,24 @@ A skip prefix that does not begin with `/` stops the application from starting.
 
 ## Limitations
 
-- A **document** — a sitemap, a feed — has no `PageResolved` hook, so its span keeps
-  the method as its name and has no `http.route`.
-- collage opens `collage.http` before middleware, so continuing the caller's trace
-  depends on holding that span until the middleware runs. Were collage to start its
-  request span from a context a plugin could shape first, or read the trace context
-  itself, the holding would go.
-- A request the application's own middleware answers before this plugin's is not
-  linked to its caller's trace: its headers were never read.
+- A **document**'s and an **action**'s `http.route` is its registered name, not
+  its URL pattern: collage tells a plugin what a request resolved to by name, and
+  lists only pages' patterns.
 - Only string attributes reach a span through `collage.Span.SetAttribute`; that is
   the interface collage calls.
+
+## Changes
+
+### v0.2.0
+
+- The server span is started in `OnRequest`, collage v0.25.0's `RequestHook`,
+  before collage opens `collage.http`. `collage.http` is now the server span's
+  child rather than being held back and started as the server span, and the
+  plugin no longer adds middleware or wraps the response writer.
+- A request the application's middleware answers is inside the caller's trace.
+- `http.route` comes from `collage.RouteOf`: a document, an action, a mount and a
+  handler are named for their route too, where only a page was before. New
+  attributes `collage.route.kind` and `collage.route.name`.
+- `collage.http`'s own attributes — `http.method`, `http.path`, `http.status_code`
+  — stay on `collage.http` rather than on the server span.
+- Requires collage v0.25.0.

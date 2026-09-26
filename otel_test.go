@@ -25,6 +25,7 @@ type setup struct {
 	plugin  bool // in Plugins
 	config  string
 	handler http.Handler // mounted at /raw/
+	locales bool         // en and tr, prefixed
 }
 
 func site(t *testing.T, s setup) (http.Handler, *tracetest.SpanRecorder) {
@@ -37,6 +38,9 @@ func site(t *testing.T, s setup) (http.Handler, *tracetest.SpanRecorder) {
 		Template: collage.TemplateConfig{FS: fstest.MapFS{
 			"t/p.html": {Data: []byte(`<p>page</p>`)},
 		}, Root: "t"},
+	}
+	if s.locales {
+		cfg.Locale = collage.LocaleConfig{Default: "en", Supported: []string{"en", "tr"}}
 	}
 	if s.tracer {
 		cfg.Observability.Tracer = p
@@ -52,7 +56,7 @@ func site(t *testing.T, s setup) (http.Handler, *tracetest.SpanRecorder) {
 		t.Fatal(err)
 	}
 	for _, page := range []*collage.Page{
-		collage.NewPage("post").WithContent(collage.NewFragment("post", "p.html").Build()).WithPath("en", "/blog/{slug}").Build(),
+		collage.NewPage("post").WithContent(collage.NewFragment("post", "p.html").Build()).WithPath("en", "/blog/{slug}").WithPath("tr", "/blog/{slug}").Build(),
 		collage.NewPage("broken").WithContent(collage.NewFragment("broken", "p.html").Required().WithDataHandler(
 			func(context.Context, *collage.RenderContext) (any, []string, error) { // any: DataHandlerFunc's own signature
 				return nil, nil, errors.New("backend down")
@@ -61,6 +65,9 @@ func site(t *testing.T, s setup) (http.Handler, *tracetest.SpanRecorder) {
 		if err := app.RegisterPage(page); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := app.RegisterDocument(collage.NewDocument("feed", "application/xml").AtRoot("/feed.xml").WithBody([]byte("<feed/>")).Build()); err != nil {
+		t.Fatal(err)
 	}
 	if s.handler != nil {
 		if err := app.Handle("/raw/", s.handler); err != nil {
@@ -97,8 +104,9 @@ func attr(s sdktrace.ReadOnlySpan, key string) (string, bool) {
 	return "", false
 }
 
-// The caller's trace is continued: the request's span is a server span whose
-// parent is the caller's, and collage's own spans nest under it.
+// The caller's trace is continued: the server span is the root of the request,
+// a child of the caller's remote span, and collage's own spans nest under it —
+// collage.http first, then the render and the fragment.
 func TestContinuesTheIncomingTrace(t *testing.T) {
 	h, rec := site(t, setup{tracer: true, plugin: true})
 	if code := get(h, "/blog/hello", "traceparent", traceparent).Code; code != http.StatusOK {
@@ -122,30 +130,78 @@ func TestContinuesTheIncomingTrace(t *testing.T) {
 		"http.request.method":       "GET",
 		"http.route":                "/blog/{slug}",
 		"http.response.status_code": "200",
+		"url.path":                  "/blog/hello",
 		"collage.page":              "post",
-		// What collage said about collage.http, before the span had started.
-		"http.method":      "GET",
-		"http.path":        "/blog/hello",
-		"http.status_code": "200",
+		"collage.route.kind":        "page",
+		"collage.route.name":        "post",
 	} {
 		if got, _ := attr(server, key); got != want {
 			t.Errorf("%s = %q, want %q", key, got, want)
 		}
 	}
-	for _, name := range []string{"collage.render", "collage.fragment"} {
-		s, ok := spans[name]
-		if !ok {
-			t.Fatalf("no %s span; spans: %v", name, names(rec.Ended()))
+	for child, parent := range map[string]sdktrace.ReadOnlySpan{
+		"collage.http":     server,
+		"collage.render":   spans["collage.http"],
+		"collage.fragment": spans["collage.render"],
+	} {
+		s, ok := spans[child]
+		if !ok || parent == nil {
+			t.Fatalf("no %s span; spans: %v", child, names(rec.Ended()))
+		}
+		if s.Parent().SpanID() != parent.SpanContext().SpanID() {
+			t.Errorf("%s is not a child of %s", child, parent.Name())
 		}
 		if s.SpanContext().TraceID() != server.SpanContext().TraceID() {
-			t.Errorf("%s is in another trace", name)
+			t.Errorf("%s is in another trace", child)
 		}
 	}
-	if spans["collage.render"].Parent().SpanID() != server.SpanContext().SpanID() {
-		t.Error("collage.render is not a child of the server span")
+	// collage's own attributes stay on its own span.
+	if got, _ := attr(spans["collage.http"], "http.status_code"); got != "200" {
+		t.Errorf("collage.http status = %q", got)
 	}
-	if len(rec.Ended()) != 3 {
-		t.Errorf("spans = %v, want the server span, the render and the fragment", names(rec.Ended()))
+	if len(rec.Ended()) != 4 {
+		t.Errorf("spans = %v, want the server span, collage.http, the render and the fragment", names(rec.Ended()))
+	}
+}
+
+// A document and a handler are named for their route too: a document by its
+// registered name, a handler by its prefix.
+func TestNonPageRoutes(t *testing.T) {
+	h, rec := site(t, setup{tracer: true, plugin: true, handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	})})
+	for path, want := range map[string][3]string{
+		"/feed.xml": {"GET feed", "document", "feed"},
+		"/raw/x":    {"GET /raw/", "handler", "/raw/"},
+	} {
+		rec.Reset()
+		get(h, path)
+		server := byName(rec.Ended())[want[0]]
+		if server == nil {
+			t.Errorf("%s: no span %q; spans: %v", path, want[0], names(rec.Ended()))
+			continue
+		}
+		if got, _ := attr(server, "collage.route.kind"); got != want[1] {
+			t.Errorf("%s: kind = %q", path, got)
+		}
+		if got, _ := attr(server, "http.route"); got != want[2] {
+			t.Errorf("%s: route = %q", path, got)
+		}
+	}
+}
+
+// The locale prefix the router stripped is part of the route.
+func TestLocalePrefix(t *testing.T) {
+	h, rec := site(t, setup{tracer: true, plugin: true, locales: true})
+	if code := get(h, "/tr/blog/merhaba").Code; code != http.StatusOK {
+		t.Fatalf("status %d", code)
+	}
+	server := byName(rec.Ended())["GET /tr/blog/{slug}"]
+	if server == nil {
+		t.Fatalf("spans %v", names(rec.Ended()))
+	}
+	if got, _ := attr(server, "collage.locale"); got != "tr" {
+		t.Errorf("locale = %q", got)
 	}
 }
 
@@ -178,18 +234,28 @@ func TestErrors(t *testing.T) {
 	if fragment == nil || fragment.Status().Code != codes.Error || len(fragment.Events()) == 0 || fragment.Events()[0].Name != "exception" {
 		t.Errorf("fragment span does not record the error: %+v", fragment)
 	}
-	if server := spans["GET /broken"]; server == nil || server.Status().Code != codes.Error {
-		t.Errorf("server span not an error: %v", names(rec.Ended()))
+	server := spans["GET /broken"]
+	if server == nil || server.Status().Code != codes.Error {
+		t.Fatalf("server span not an error: %v", names(rec.Ended()))
+	}
+	if got, _ := attr(server, "http.response.status_code"); got != "500" {
+		t.Errorf("status = %q", got)
+	}
+	if got, _ := attr(server, "http.route"); got != "/broken" {
+		t.Errorf("route = %q", got)
 	}
 
 	h, rec = site(t, setup{tracer: true, plugin: true})
 	get(h, "/nowhere")
-	server := byName(rec.Ended())["GET"]
+	server = byName(rec.Ended())["GET"]
 	if server == nil || server.Status().Code == codes.Error {
 		t.Errorf("a 404 is not the server's error: %v", names(rec.Ended()))
 	}
 	if got, _ := attr(server, "http.response.status_code"); got != "404" {
 		t.Errorf("status = %q", got)
+	}
+	if _, ok := attr(server, "http.route"); ok {
+		t.Error("an unresolved request has no route")
 	}
 }
 
@@ -208,7 +274,8 @@ func TestTracerAlone(t *testing.T) {
 	}
 }
 
-// As a plugin alone, the middleware's own span continues the caller's trace.
+// As a plugin alone, the server span continues the caller's trace, and is the
+// only span.
 func TestPluginAlone(t *testing.T) {
 	h, rec := site(t, setup{plugin: true})
 	get(h, "/blog/hello", "traceparent", traceparent)
@@ -218,13 +285,12 @@ func TestPluginAlone(t *testing.T) {
 	}
 }
 
-// A skipped path is not traced by the middleware; collage's span for it is its
-// own trace.
+// A skipped path gets no server span; collage's span for it is its own trace.
 func TestSkip(t *testing.T) {
 	h, rec := site(t, setup{tracer: true, plugin: true, config: `{"skip": ["/blog/"]}`})
 	get(h, "/blog/hello", "traceparent", traceparent)
 	root := byName(rec.Ended())["collage.http"]
-	if root == nil || root.Parent().IsValid() {
+	if root == nil || root.Parent().IsValid() || len(rec.Ended()) != 3 {
 		t.Errorf("spans %v", names(rec.Ended()))
 	}
 }
@@ -236,7 +302,8 @@ func TestBadConfigStopsStartup(t *testing.T) {
 	}
 }
 
-// A stream and a WebSocket beneath the middleware still reach the connection.
+// Nothing wraps the response writer: a stream and a WebSocket reach the
+// connection.
 func TestFlushAndHijackPassThrough(t *testing.T) {
 	var flushed, hijackable bool
 	h, _ := site(t, setup{tracer: true, plugin: true, handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

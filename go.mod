@@ -1,12 +1,12 @@
 // A collage plugin for OpenTelemetry tracing: an adapter that gives collage an
-// OpenTelemetry tracer for its own spans, and middleware that continues the trace
-// a request arrives with, so every span of the request is one trace.
+// OpenTelemetry tracer for its own spans, and a request hook that continues the
+// trace a request arrives with, so every span of the request is one trace.
 module github.com/Elagoht/collage-otel
 
 go 1.26
 
 require (
-	github.com/Elagoht/collage v0.23.0
+	github.com/Elagoht/collage v0.25.0
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/sdk v1.46.0
 	go.opentelemetry.io/otel/trace v1.46.0
