@@ -19,7 +19,7 @@
 // collage opens its own request span. So collage.http starts as the server span's
 // child, and every span collage opens afterwards — the render, each fragment —
 // nests under that. When the response is written the server span is told the
-// status and named for the route the request resolved to, from collage.RouteOf.
+// status and named for the route the request resolved to, from collage.RouteInfo.
 //
 // The application sets up the SDK: the tracer provider, the exporter, the
 // propagator. This package only speaks the API.
@@ -84,14 +84,13 @@ func New(opts Options) *Plugin {
 func NewTracer(tracer trace.Tracer) *Plugin { return New(Options{Tracer: tracer}) }
 
 func (p *Plugin) Name() string                   { return Name }
-func (p *Plugin) Version() string                { return "0.2.0" }
+func (p *Plugin) Version() string                { return "0.2.1" }
 func (p *Plugin) Shutdown(context.Context) error { return nil }
 
 var (
-	_ collage.Plugin           = (*Plugin)(nil)
-	_ collage.Tracer           = (*Plugin)(nil)
-	_ collage.RequestHook      = (*Plugin)(nil)
-	_ collage.PageResolvedHook = (*Plugin)(nil)
+	_ collage.Plugin      = (*Plugin)(nil)
+	_ collage.Tracer      = (*Plugin)(nil)
+	_ collage.RequestHook = (*Plugin)(nil)
 )
 
 // Init reads the configuration.
@@ -139,19 +138,6 @@ func (s Span) RecordError(err error) {
 // End ends the span.
 func (s Span) End() { s.Span.End() }
 
-// requestKey carries a request's state from OnRequest to OnPageResolved, which is
-// handed the request's context but not the request.
-type requestKey struct{}
-
-// request is what the server span learns while the request is served. It is
-// written and read on the request's own goroutine, as collage serves a request.
-type request struct {
-	// pattern and locale are the page's, when the request resolved to one:
-	// collage.RouteOf names the page, not the URL pattern it matched.
-	pattern string
-	locale  string
-}
-
 // OnRequest starts the request's server span, as a child of the caller's span
 // when the headers carry one, and returns its context: collage opens its own
 // request span under it. The function it returns ends the span once the response
@@ -174,11 +160,9 @@ func (p *Plugin) OnRequest(r *http.Request) (context.Context, func(status int)) 
 			attribute.String("user_agent.original", r.UserAgent()),
 		),
 	)
-	state := &request{}
-	ctx = context.WithValue(ctx, requestKey{}, state)
-	method := r.Method
+	method, path := r.Method, r.URL.Path
 	return ctx, func(status int) {
-		if route, attrs := state.route(ctx); route != "" {
+		if route, attrs := route(ctx, path); route != "" {
 			span.SetName(method + " " + route)
 			span.SetAttributes(attrs...)
 		}
@@ -193,50 +177,37 @@ func (p *Plugin) OnRequest(r *http.Request) (context.Context, func(status int)) 
 }
 
 // route is what the request resolved to, as http.route, and the attributes that
-// say so. A page is its URL pattern, with the locale prefix when the request had
-// one; a mount or a handler is its prefix; a document or an action is its
-// registered name, because a plugin is not told a document's pattern. An
-// unresolved request — a 404 — has none.
-func (s *request) route(ctx context.Context) (string, []attribute.KeyValue) {
-	kind, name := collage.RouteOf(ctx)
-	if kind == "" {
+// say so: the pattern the page, document or action was registered with, with the
+// locale prefix when the request's path had one; a mount's or a handler's
+// prefix. An unresolved request — a 404 — has none.
+func route(ctx context.Context, path string) (string, []attribute.KeyValue) {
+	info := collage.RouteInfo(ctx)
+	if info.Kind == "" {
 		return "", nil
 	}
-	route := name
-	attrs := []attribute.KeyValue{
-		attribute.String("collage.route.kind", kind),
-		attribute.String("collage.route.name", name),
-	}
-	if kind == "page" {
-		attrs = append(attrs, attribute.String("collage.page", name))
-		if s.pattern != "" {
-			route = s.pattern
-			attrs = append(attrs, attribute.String("collage.locale", s.locale))
-		}
-	}
-	return route, append(attrs, attribute.String("http.route", route))
-}
-
-// OnPageResolved records the pattern the page matched, which RouteOf does not
-// carry. It fires for a page served from the cache too.
-func (p *Plugin) OnPageResolved(ctx context.Context, ev *collage.PageResolvedEvent) error {
-	state, ok := ctx.Value(requestKey{}).(*request)
-	if !ok || ev.Page == nil {
-		return nil
-	}
-	pattern, found := ev.Page.Paths[ev.Locale]
-	if !found {
-		return nil
+	pattern := info.Pattern
+	if pattern == "" {
+		pattern = info.Name
 	}
 	// The locale prefix the router stripped is part of the route that matched.
-	if prefix := "/" + ev.Locale; ev.Locale != "" && (ev.Path == prefix || strings.HasPrefix(ev.Path, prefix+"/")) {
+	if prefix := "/" + info.Locale; info.Locale != "" && (path == prefix || strings.HasPrefix(path, prefix+"/")) {
 		pattern = strings.TrimSuffix(prefix+pattern, "/")
 		if pattern == "" {
 			pattern = "/"
 		}
 	}
-	state.pattern, state.locale = pattern, ev.Locale
-	return nil
+	attrs := []attribute.KeyValue{
+		attribute.String("collage.route.kind", info.Kind),
+		attribute.String("collage.route.name", info.Name),
+		attribute.String("http.route", pattern),
+	}
+	if info.Kind == "page" {
+		attrs = append(attrs, attribute.String("collage.page", info.Name))
+	}
+	if info.Locale != "" {
+		attrs = append(attrs, attribute.String("collage.locale", info.Locale))
+	}
+	return pattern, attrs
 }
 
 func scheme(r *http.Request) string {

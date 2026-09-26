@@ -6,7 +6,7 @@ module github.com/Elagoht/collage-otel
 go 1.26
 
 require (
-	github.com/Elagoht/collage v0.25.0
+	github.com/Elagoht/collage v0.26.0
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/sdk v1.46.0
 	go.opentelemetry.io/otel/trace v1.46.0

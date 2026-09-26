@@ -13,7 +13,7 @@ app, err := collage.New(&collage.Config{
 })
 ```
 
-Requires collage v0.25.0 or later.
+Requires collage v0.26.0 or later.
 
 ## Both lines
 
@@ -52,16 +52,15 @@ A request the application's own middleware answers — a `401` from an auth chec
 is inside the server span too, because middleware runs after `OnRequest`.
 
 Once the response is written, collage hands the plugin the status, and the span is
-named for the route the request resolved to, from `collage.RouteOf`:
+named for the route the request resolved to, from `collage.RouteInfo`:
 `GET /blog/{slug}`, never `GET /blog/hello`, because a trace store groups by name
 and a name per URL is a group per URL. A request that resolved to nothing — a
 `404` — keeps the method as its name.
 
 | Route | `http.route` |
 | --- | --- |
-| a page | its pattern, with the locale prefix when the request had one: `/tr/blog/{slug}` |
+| a page, a document or an action | the pattern it was registered with, with the locale prefix when the request had one: `/tr/blog/{slug}`, `/feed.xml` |
 | a mount or a handler | its prefix: `/static/` |
-| a document or an action | its registered name: `feed` |
 
 | Attribute | |
 | --- | --- |
@@ -69,8 +68,9 @@ and a name per URL is a group per URL. A request that resolved to nothing — a
 | `http.route` | as above |
 | `http.response.status_code` | `200` |
 | `url.path`, `url.scheme`, `user_agent.original` | from the request |
-| `collage.route.kind`, `collage.route.name` | what `collage.RouteOf` reports: `page` and `post`, `document` and `feed` |
-| `collage.page`, `collage.locale` | the page it resolved to |
+| `collage.route.kind`, `collage.route.name` | what the request resolved to: `page` and `post`, `document` and `feed` |
+| `collage.page` | the page it resolved to |
+| `collage.locale` | the locale it resolved to |
 
 `collage.http` keeps what collage sets on it: `http.method`, `http.path`,
 `http.status_code`.
@@ -151,13 +151,17 @@ A skip prefix that does not begin with `/` stops the application from starting.
 
 ## Limitations
 
-- A **document**'s and an **action**'s `http.route` is its registered name, not
-  its URL pattern: collage tells a plugin what a request resolved to by name, and
-  lists only pages' patterns.
 - Only string attributes reach a span through `collage.Span.SetAttribute`; that is
   the interface collage calls.
 
 ## Changes
+
+### v0.2.1
+
+- `http.route` comes from `collage.RouteInfo` (collage v0.26.0): a document and an
+  action are named for the pattern they were registered with, like a page, rather
+  than their registered name. The `OnPageResolved` hook is gone.
+- Requires collage v0.26.0.
 
 ### v0.2.0
 

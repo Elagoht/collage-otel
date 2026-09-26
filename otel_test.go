@@ -164,14 +164,14 @@ func TestContinuesTheIncomingTrace(t *testing.T) {
 	}
 }
 
-// A document and a handler are named for their route too: a document by its
-// registered name, a handler by its prefix.
+// A document and a handler are named for their route too: a document by the
+// pattern it was registered with, like a page, a handler by its prefix.
 func TestNonPageRoutes(t *testing.T) {
 	h, rec := site(t, setup{tracer: true, plugin: true, handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 	})})
 	for path, want := range map[string][3]string{
-		"/feed.xml": {"GET feed", "document", "feed"},
+		"/feed.xml": {"GET /feed.xml", "document", "/feed.xml"},
 		"/raw/x":    {"GET /raw/", "handler", "/raw/"},
 	} {
 		rec.Reset()
