@@ -1,0 +1,19 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Elagoht/collage-snippets-highlighter/main/schemas/collage-plugin-manifest.schema.json",
+  "name": "elagoht/otel",
+  "description": "A collage plugin for OpenTelemetry tracing.",
+  "repository": "https://github.com/Elagoht/collage-otel",
+  "config": {
+    "type": "object",
+    "description": "A collage plugin for OpenTelemetry tracing.",
+    "properties": {
+      "skip": {
+        "type": "array",
+        "description": "Skip are path prefixes whose requests get no server span: a health check a load balancer polls every second is noise in a trace store. Their collage.http span is still started, as a trace of its own, when this package is collage's Tracer.",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

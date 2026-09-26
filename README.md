@@ -156,6 +156,12 @@ A skip prefix that does not begin with `/` stops the application from starting.
 
 ## Changes
 
+### v0.2.2
+
+- `collage.json`: the plugin described to editors — its template functions,
+  snippets and configuration schema — for the Collage Snippets & Highlighter
+  extension and any tool reading it.
+
 ### v0.2.1
 
 - `http.route` comes from `collage.RouteInfo` (collage v0.26.0): a document and an
