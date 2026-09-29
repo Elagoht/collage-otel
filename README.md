@@ -156,6 +156,11 @@ A skip prefix that does not begin with `/` stops the application from starting.
 
 ## Changes
 
+### v0.2.3
+
+- Tests only: the test site registers its `"tr"` path only when it supports
+  `"tr"`, which collage v0.35.0 requires. The plugin itself is unchanged.
+
 ### v0.2.2
 
 - `collage.json`: the plugin described to editors — its template functions,

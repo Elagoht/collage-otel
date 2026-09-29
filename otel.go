@@ -84,7 +84,7 @@ func New(opts Options) *Plugin {
 func NewTracer(tracer trace.Tracer) *Plugin { return New(Options{Tracer: tracer}) }
 
 func (p *Plugin) Name() string                   { return Name }
-func (p *Plugin) Version() string                { return "0.2.2" }
+func (p *Plugin) Version() string                { return "0.2.3" }
 func (p *Plugin) Shutdown(context.Context) error { return nil }
 
 var (

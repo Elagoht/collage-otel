@@ -55,8 +55,13 @@ func site(t *testing.T, s setup) (http.Handler, *tracetest.SpanRecorder) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	post := collage.NewPage("post").WithContent(collage.NewFragment("post", "p.html").Build()).WithPath("en", "/blog/{slug}")
+	// Only where "tr" is supported: collage refuses a path no URL reaches.
+	if s.locales {
+		post.WithPath("tr", "/blog/{slug}")
+	}
 	for _, page := range []*collage.Page{
-		collage.NewPage("post").WithContent(collage.NewFragment("post", "p.html").Build()).WithPath("en", "/blog/{slug}").WithPath("tr", "/blog/{slug}").Build(),
+		post.Build(),
 		collage.NewPage("broken").WithContent(collage.NewFragment("broken", "p.html").Required().WithDataHandler(
 			func(context.Context, *collage.RenderContext) (any, []string, error) { // any: DataHandlerFunc's own signature
 				return nil, nil, errors.New("backend down")
