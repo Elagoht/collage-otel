@@ -156,6 +156,12 @@ A skip prefix that does not begin with `/` stops the application from starting.
 
 ## Changes
 
+### v0.2.5
+
+- Requires collage v0.49.0. Tests only: the test site gives its fragments
+  typed data with `collage.Load` and `collage.DataHandler`, since
+  `WithDataHandler` is gone. The plugin itself is unchanged.
+
 ### v0.2.3
 
 - Tests only: the test site registers its `"tr"` path only when it supports

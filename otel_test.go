@@ -62,10 +62,10 @@ func site(t *testing.T, s setup) (http.Handler, *tracetest.SpanRecorder) {
 	}
 	for _, page := range []*collage.Page{
 		post.Build(),
-		collage.NewPage("broken").WithContent(collage.NewFragment("broken", "p.html").Required().WithDataHandler(
-			func(context.Context, *collage.RenderContext) (any, []string, error) { // any: DataHandlerFunc's own signature
-				return nil, nil, errors.New("backend down")
-			}).Build()).WithPath("en", "/broken").Build(),
+		collage.NewPage("broken").WithContent(collage.NewFragment("broken", "p.html").Required().WithData(collage.Load(
+			func(context.Context, *collage.RenderContext) (string, error) {
+				return "", errors.New("backend down")
+			})).Build()).WithPath("en", "/broken").Build(),
 	} {
 		if err := app.RegisterPage(page); err != nil {
 			t.Fatal(err)
