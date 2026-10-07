@@ -37,6 +37,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 // Name is the plugin's name, and the key its configuration is found under.
@@ -84,7 +85,7 @@ func New(opts Options) *Plugin {
 func NewTracer(tracer trace.Tracer) *Plugin { return New(Options{Tracer: tracer}) }
 
 func (p *Plugin) Name() string                   { return Name }
-func (p *Plugin) Version() string                { return "0.2.8" }
+func (p *Plugin) Version() string                { return "0.2.9" }
 func (p *Plugin) Shutdown(context.Context) error { return nil }
 
 var (
@@ -116,8 +117,13 @@ func (p *Plugin) propagator() propagation.TextMapPropagator {
 }
 
 // StartSpan starts an OpenTelemetry span as a child of any span in ctx — for
-// collage.http, the server span OnRequest started.
+// collage.http, the server span OnRequest started. For a static build's header
+// capture (collage.IsCapture) it starts nothing: it returns ctx as it is and a
+// span that records nothing.
 func (p *Plugin) StartSpan(ctx context.Context, name string) (context.Context, collage.Span) {
+	if collage.IsCapture(ctx) {
+		return ctx, Span{noop.Span{}}
+	}
 	ctx, span := p.tracer.Start(ctx, name)
 	return ctx, Span{span}
 }
@@ -144,7 +150,14 @@ func (s Span) End() { s.Span.End() }
 // when the headers carry one, and returns its context: collage opens its own
 // request span under it. The function it returns ends the span once the response
 // is written, named for the route the request resolved to.
+//
+// A static build asking for its own files to capture their headers is not
+// traced: it gets no server span, and the trace context its headers carry —
+// none — is not read.
 func (p *Plugin) OnRequest(r *http.Request) (context.Context, func(status int)) {
+	if collage.IsCapture(r.Context()) {
+		return r.Context(), nil
+	}
 	for _, prefix := range p.opts.Skip {
 		if strings.HasPrefix(r.URL.Path, prefix) {
 			return r.Context(), nil

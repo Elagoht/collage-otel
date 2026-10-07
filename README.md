@@ -13,7 +13,7 @@ app, err := collage.New(&collage.Config{
 })
 ```
 
-Requires collage v0.50.0 or later.
+Requires collage v0.52.0 or later.
 
 ## Both lines
 
@@ -155,6 +155,10 @@ A skip prefix that does not begin with `/` stops the application from starting.
   the interface collage calls.
 
 ## Changes
+
+### v0.2.9
+
+- Requires collage v0.52.0. A static build's header capture (`collage.IsCapture`) is not traced: it gets no server span, and `StartSpan` hands collage a span that records nothing for it, so `collage.http`, `collage.render` and `collage.fragment` are not exported for the build's own requests. The plugin never set a response header, and still sets none.
 
 ### v0.2.8
 

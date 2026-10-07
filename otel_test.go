@@ -103,7 +103,7 @@ func byName(spans []sdktrace.ReadOnlySpan) map[string]sdktrace.ReadOnlySpan {
 func attr(s sdktrace.ReadOnlySpan, key string) (string, bool) {
 	for _, kv := range s.Attributes() {
 		if string(kv.Key) == key {
-			return kv.Value.Emit(), true
+			return kv.Value.String(), true
 		}
 	}
 	return "", false
