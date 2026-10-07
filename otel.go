@@ -84,7 +84,7 @@ func New(opts Options) *Plugin {
 func NewTracer(tracer trace.Tracer) *Plugin { return New(Options{Tracer: tracer}) }
 
 func (p *Plugin) Name() string                   { return Name }
-func (p *Plugin) Version() string                { return "0.2.5" }
+func (p *Plugin) Version() string                { return "0.2.6" }
 func (p *Plugin) Shutdown(context.Context) error { return nil }
 
 var (
@@ -95,9 +95,11 @@ var (
 
 // Init reads the configuration.
 func (p *Plugin) Init(_ context.Context, host collage.Host) error {
-	if err := host.Config(&p.opts); err != nil {
+	cfg, err := collage.PluginConfig(host, p.opts)
+	if err != nil {
 		return err
 	}
+	p.opts = cfg
 	for _, prefix := range p.opts.Skip {
 		if !strings.HasPrefix(prefix, "/") {
 			return fmt.Errorf("otel: skip prefix %q must begin with /", prefix)
