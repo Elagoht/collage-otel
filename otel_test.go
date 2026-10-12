@@ -11,6 +11,7 @@ import (
 
 	otel "github.com/Elagoht/collage-otel"
 	"github.com/Elagoht/collage/pkg/collage"
+	"github.com/Elagoht/collage/pkg/collagetest"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -322,5 +323,55 @@ func TestFlushAndHijackPassThrough(t *testing.T) {
 	}
 	if !flushed || !hijackable {
 		t.Errorf("flush %v, hijacker %v", flushed, hijackable)
+	}
+}
+
+// proxiedSite is a site behind the trusted proxy 10.0.0.1 with the plugin, its
+// span recorder, a page at / and the config given.
+func proxiedSite(t *testing.T, config string) (*collagetest.Site, *tracetest.SpanRecorder) {
+	t.Helper()
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	opts := []collagetest.SiteOption{
+		collagetest.WithPlugins(otel.New(otel.Options{Tracer: tp.Tracer("test")})),
+		collagetest.WithConfig(func(c *collage.Config) { c.Server.TrustedProxies = []string{"10.0.0.1"} }),
+	}
+	if config != "" {
+		opts = append(opts, collagetest.WithPluginConfig(otel.Name, config))
+	}
+	return collagetest.NewSite(t, opts...), rec
+}
+
+// url.scheme is collage.IsHTTPS: https behind a trusted proxy that says so, and
+// http when an untrusted client says so.
+func TestSchemeBehindTrustedProxy(t *testing.T) {
+	site, rec := proxiedSite(t, "")
+	for remote, want := range map[string]string{"10.0.0.1:1": "https", "203.0.113.9:1": "http"} {
+		req := site.Request(http.MethodGet, "/", nil)
+		req.RemoteAddr = remote
+		req.Header.Set("X-Forwarded-Proto", "https")
+		site.Do(req)
+		ended := rec.Ended()
+		if got, _ := attr(ended[len(ended)-1], "url.scheme"); got != want {
+			t.Errorf("from %s: url.scheme = %q, want %q", remote, got, want)
+		}
+	}
+}
+
+// A skip prefix matches with or without its trailing slash, at a segment
+// boundary: "/blog/" skips /blog itself, and "/blog" does not skip /blogger.
+func TestSkipPrefixSlash(t *testing.T) {
+	for config, paths := range map[string]map[string]bool{
+		`{"skip":["/blog/"]}`: {"/blog": true, "/blog/x": true, "/blogger": false},
+		`{"skip":["/blog"]}`:  {"/blog": true, "/blog/x": true, "/blogger": false},
+	} {
+		site, rec := proxiedSite(t, config)
+		for path, skipped := range paths {
+			before := len(rec.Ended())
+			site.Get(path)
+			if got := len(rec.Ended()) == before; got != skipped {
+				t.Errorf("%s: %s skipped = %v, want %v", config, path, got, skipped)
+			}
+		}
 	}
 }

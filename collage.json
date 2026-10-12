@@ -3,13 +3,14 @@
   "name": "elagoht/otel",
   "description": "A collage plugin for OpenTelemetry tracing.",
   "repository": "https://github.com/Elagoht/collage-otel",
+  "setup": "Hand the same value to `Config.Observability.Tracer` as well as `Config.Plugins`, or collage's own spans (collage.http, collage.render, collage.fragment) are never converted: `t := otel.New(otel.Options{Tracer: provider.Tracer(\"example.com/site\")})`, then `Observability: collage.ObservabilityConfig{Tracer: t}` and `Plugins: []collage.Plugin{t}`. Without `Tracer`, the global tracer provider's is used.",
   "config": {
     "type": "object",
     "description": "A collage plugin for OpenTelemetry tracing.",
     "properties": {
       "skip": {
         "type": "array",
-        "description": "Skip are path prefixes whose requests get no server span: a health check a load balancer polls every second is noise in a trace store. Their collage.http span is still started, as a trace of its own, when this package is collage's Tracer.",
+        "description": "Skip are path prefixes whose requests get no server span: a health check a load balancer polls every second is noise in a trace store. A prefix matches at a segment boundary, with or without its trailing slash: \"/blog\" and \"/blog/\" both skip /blog and /blog/x, and neither /blogger. Their collage.http span is still started, as a trace of its own, when this package is collage's Tracer.",
         "items": {
           "type": "string"
         }

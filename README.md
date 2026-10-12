@@ -5,7 +5,7 @@ OpenTelemetry spans, and a request continues the trace its caller started, so ev
 span of a request — across services — is one trace.
 
 ```go
-t := otel.NewTracer(provider.Tracer("example.com/site"))
+t := otel.New(otel.Options{Tracer: provider.Tracer("example.com/site")})
 
 app, err := collage.New(&collage.Config{
 	Observability: collage.ObservabilityConfig{Tracer: t},
@@ -13,7 +13,7 @@ app, err := collage.New(&collage.Config{
 })
 ```
 
-Requires collage v0.60.0 or later.
+Requires collage v0.61.0 or later.
 
 ## Both lines
 
@@ -67,7 +67,7 @@ and a name per URL is a group per URL. A request that resolved to nothing — a
 | `http.request.method` | `GET` |
 | `http.route` | as above |
 | `http.response.status_code` | `200` |
-| `url.path`, `url.scheme`, `user_agent.original` | from the request |
+| `url.path`, `url.scheme`, `user_agent.original` | from the request; the scheme is `collage.IsHTTPS`, so `https` behind a trusted TLS-terminating proxy |
 | `collage.route.kind`, `collage.route.name` | what the request resolved to: `page` and `post`, `document` and `feed` |
 | `collage.page` | the page it resolved to |
 | `collage.locale` | the locale it resolved to |
@@ -106,7 +106,7 @@ gotel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 	propagation.TraceContext{}, propagation.Baggage{},
 ))
 
-t := otel.NewTracer(provider.Tracer("example.com/site"))
+t := otel.New(otel.Options{Tracer: provider.Tracer("example.com/site")})
 ```
 
 In production swap the exporter for `otlptracehttp` or `otlptracegrpc`, pointed at
@@ -130,9 +130,9 @@ otel.New(otel.Options{
 | --- | --- | --- |
 | `Tracer` | the global provider's tracer for `github.com/Elagoht/collage-otel` | Starts every span. Go only |
 | `Propagator` | `otel.GetTextMapPropagator()` | Reads the caller's context from the headers. Go only |
-| `Skip` (`skip`) | none | Path prefixes that get no server span |
+| `Skip` (`skip`) | none | Path prefixes that get no server span, matched at a segment boundary with or without the trailing `/` (`"/blog"` and `"/blog/"` both skip `/blog` and `/blog/x`, not `/blogger`) |
 
-`NewTracer(tracer)` is `New(Options{Tracer: tracer})`. A skipped request's
+A skipped request's
 `collage.http` is still started, as a trace of its own, when this package is
 collage's tracer; a health check polled every second is better sampled out in the
 SDK than traced at all.
@@ -155,6 +155,20 @@ A skip prefix that does not begin with `/` stops the application from starting.
   the interface collage calls.
 
 ## Changes
+
+### Changed in v0.3.0
+
+| Was | Now |
+| --- | --- |
+| `otel.NewTracer(tracer)` | `otel.New(otel.Options{Tracer: tracer})` |
+| `otel.Span` (exported adapter) | unexported; read the OpenTelemetry span with `trace.SpanFromContext(ctx)` |
+
+- `url.scheme` follows `collage.IsHTTPS`: `https` behind a trusted proxy that says
+  so, where it was `http` for every proxied request.
+- A `skip` prefix matches with or without its trailing slash, at a segment
+  boundary: `"/blog/"` now skips `/blog` itself, and `"/blog"` no longer skips
+  `/blogger`.
+- Requires collage v0.61.0.
 
 ### v0.2.10
 

@@ -1,6 +1,6 @@
 // Package otel is a collage plugin for OpenTelemetry tracing.
 //
-//	t := otel.NewTracer(provider.Tracer("example.com/site"))
+//	t := otel.New(otel.Options{Tracer: provider.Tracer("example.com/site")})
 //	app, err := collage.New(&collage.Config{
 //		Observability: collage.ObservabilityConfig{Tracer: t},
 //		Plugins:       []collage.Plugin{t},
@@ -57,7 +57,9 @@ type Options struct {
 	// application sets one. It can only be set from Go.
 	Propagator propagation.TextMapPropagator `json:"-"`
 	// Skip are path prefixes whose requests get no server span: a health check a
-	// load balancer polls every second is noise in a trace store. Their
+	// load balancer polls every second is noise in a trace store. A prefix
+	// matches at a segment boundary, with or without its trailing slash: "/blog"
+	// and "/blog/" both skip /blog and /blog/x, and neither /blogger. Their
 	// collage.http span is still started, as a trace of its own, when this
 	// package is collage's Tracer.
 	Skip []string `json:"skip"`
@@ -71,7 +73,8 @@ type Plugin struct {
 }
 
 // New returns the plugin with opts as its starting point, which the application's
-// own configuration is then decoded over.
+// own configuration is then decoded over. Hand the same value to
+// Config.Observability.Tracer and to Config.Plugins.
 func New(opts Options) *Plugin {
 	p := &Plugin{opts: opts, tracer: opts.Tracer}
 	if p.tracer == nil {
@@ -80,12 +83,8 @@ func New(opts Options) *Plugin {
 	return p
 }
 
-// NewTracer returns the plugin with tracer starting its spans: hand the same value
-// to Config.Observability.Tracer and to Config.Plugins.
-func NewTracer(tracer trace.Tracer) *Plugin { return New(Options{Tracer: tracer}) }
-
 func (p *Plugin) Name() string                   { return Name }
-func (p *Plugin) Version() string                { return "0.2.10" }
+func (p *Plugin) Version() string                { return "0.3.0" }
 func (p *Plugin) Shutdown(context.Context) error { return nil }
 
 var (
@@ -100,13 +99,28 @@ func (p *Plugin) Init(_ context.Context, host collage.Host) error {
 	if err != nil {
 		return err
 	}
-	p.opts = cfg
-	for _, prefix := range p.opts.Skip {
+	// A copy: the caller's Options keep their slice as written.
+	skip := make([]string, 0, len(cfg.Skip))
+	for _, prefix := range cfg.Skip {
 		if !strings.HasPrefix(prefix, "/") {
 			return fmt.Errorf("otel: skip prefix %q must begin with /", prefix)
 		}
+		skip = append(skip, strings.TrimSuffix(prefix, "/"))
 	}
+	cfg.Skip = skip
+	p.opts = cfg
 	return nil
+}
+
+// skipped reports whether path is under a Skip prefix, each stored without its
+// trailing slash ("/" as "").
+func (p *Plugin) skipped(path string) bool {
+	for _, prefix := range p.opts.Skip {
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Plugin) propagator() propagation.TextMapPropagator {
@@ -122,20 +136,21 @@ func (p *Plugin) propagator() propagation.TextMapPropagator {
 // span that records nothing.
 func (p *Plugin) StartSpan(ctx context.Context, name string) (context.Context, collage.Span) {
 	if collage.IsCapture(ctx) {
-		return ctx, Span{noop.Span{}}
+		return ctx, span{noop.Span{}}
 	}
-	ctx, span := p.tracer.Start(ctx, name)
-	return ctx, Span{span}
+	ctx, s := p.tracer.Start(ctx, name)
+	return ctx, span{s}
 }
 
-// Span adapts an OpenTelemetry span to collage.Span.
-type Span struct{ trace.Span }
+// span adapts an OpenTelemetry span to collage.Span. Code that needs the
+// OpenTelemetry span itself reads it with trace.SpanFromContext.
+type span struct{ trace.Span }
 
 // SetAttribute sets a string attribute.
-func (s Span) SetAttribute(key, value string) { s.SetAttributes(attribute.String(key, value)) }
+func (s span) SetAttribute(key, value string) { s.SetAttributes(attribute.String(key, value)) }
 
 // RecordError records err on the span and marks it failed. A nil err does nothing.
-func (s Span) RecordError(err error) {
+func (s span) RecordError(err error) {
 	if err == nil {
 		return
 	}
@@ -144,7 +159,7 @@ func (s Span) RecordError(err error) {
 }
 
 // End ends the span.
-func (s Span) End() { s.Span.End() }
+func (s span) End() { s.Span.End() }
 
 // OnRequest starts the request's server span, as a child of the caller's span
 // when the headers carry one, and returns its context: collage opens its own
@@ -158,10 +173,8 @@ func (p *Plugin) OnRequest(r *http.Request) (context.Context, func(status int)) 
 	if collage.IsCapture(r.Context()) {
 		return r.Context(), nil
 	}
-	for _, prefix := range p.opts.Skip {
-		if strings.HasPrefix(r.URL.Path, prefix) {
-			return r.Context(), nil
-		}
+	if p.skipped(r.URL.Path) {
+		return r.Context(), nil
 	}
 	ctx := p.propagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
 	// Named for the method until the route is known: a span named for its path
@@ -216,7 +229,7 @@ func route(ctx context.Context, path string) (string, []attribute.KeyValue) {
 		attribute.String("collage.route.name", info.Name),
 		attribute.String("http.route", pattern),
 	}
-	if info.Kind == "page" {
+	if info.Kind == collage.RouteKindPage {
 		attrs = append(attrs, attribute.String("collage.page", info.Name))
 	}
 	if info.Locale != "" {
@@ -225,8 +238,10 @@ func route(ctx context.Context, path string) (string, []attribute.KeyValue) {
 	return pattern, attrs
 }
 
+// scheme is the request's scheme as collage.IsHTTPS decides it: TLS, or a
+// trusted proxy's X-Forwarded-Proto.
 func scheme(r *http.Request) string {
-	if r.TLS != nil {
+	if collage.IsHTTPS(r) {
 		return "https"
 	}
 	return "http"
