@@ -13,7 +13,7 @@ app, err := collage.New(&collage.Config{
 })
 ```
 
-Requires collage v0.52.0 or later.
+Requires collage v0.60.0 or later.
 
 ## Both lines
 
@@ -155,6 +155,10 @@ A skip prefix that does not begin with `/` stops the application from starting.
   the interface collage calls.
 
 ## Changes
+
+### v0.2.10
+
+- Requires collage v0.60.0 (sealed public API). No behaviour change.
 
 ### v0.2.9
 
