@@ -5,10 +5,10 @@ import (
 	"net/http"
 	"slices"
 	"testing"
-	"testing/fstest"
 
 	otel "github.com/Elagoht/collage-otel"
 	"github.com/Elagoht/collage/pkg/collage"
+	"github.com/Elagoht/collage/pkg/collagetest"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -39,24 +39,18 @@ func buildSpans(t *testing.T, reader *buildReader) []string {
 	if reader != nil {
 		plugins = append(plugins, reader)
 	}
-	app, err := collage.New(&collage.Config{
-		Server: collage.ServerConfig{Host: "localhost", Port: 3000},
-		Template: collage.TemplateConfig{FS: fstest.MapFS{
-			"t/p.html": {Data: []byte(`<main>home</main>`)},
-		}, Root: "t"},
-		Observability: collage.ObservabilityConfig{Tracer: p},
-		Plugins:       plugins,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	var pages []collage.Registrable
 	for _, path := range []string{"/", "/a", "/b"} {
-		page := collage.NewPage("p"+path).WithContent(collage.NewFragment("home", "p.html").Build()).WithPath("en", path).Build()
-		if err := app.RegisterPage(page); err != nil {
-			t.Fatal(err)
-		}
+		pages = append(pages, collage.NewPage("p"+path).WithContent(collage.NewFragment("home", "p.html").Build()).WithPath("en", path).Build())
 	}
-	report, err := collage.Build(context.Background(), app, collage.BuildOptions{OutDir: t.TempDir()})
+	site := collagetest.NewSite(t,
+		collagetest.WithoutHome(),
+		collagetest.WithTemplates(map[string]string{"p.html": `<main>home</main>`}),
+		collagetest.WithConfig(func(cfg *collage.Config) { cfg.Observability = collage.ObservabilityConfig{Tracer: p} }),
+		collagetest.WithPlugins(plugins...),
+		collagetest.WithRegister(pages...),
+	)
+	report, err := collage.Build(context.Background(), site.App, collage.BuildOptions{OutDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}

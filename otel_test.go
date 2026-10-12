@@ -34,53 +34,43 @@ func site(t *testing.T, s setup) (http.Handler, *tracetest.SpanRecorder) {
 	rec := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 	p := otel.New(otel.Options{Tracer: tp.Tracer("test"), Propagator: propagation.TraceContext{}})
-	cfg := &collage.Config{
-		Server: collage.ServerConfig{Host: "localhost", Port: 3000},
-		Template: collage.TemplateConfig{FS: fstest.MapFS{
-			"t/p.html": {Data: []byte(`<p>page</p>`)},
-		}, Root: "t"},
-	}
-	if s.locales {
-		cfg.Locale = collage.LocaleConfig{Default: "en", Supported: []string{"en", "tr"}}
-	}
-	if s.tracer {
-		cfg.Observability.Tracer = p
-	}
-	if s.plugin {
-		cfg.Plugins = []collage.Plugin{p}
-	}
-	if s.config != "" {
-		cfg.PluginConfig = map[string]json.RawMessage{otel.Name: json.RawMessage(s.config)}
-	}
-	app, err := collage.New(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
 	post := collage.NewPage("post").WithContent(collage.NewFragment("post", "p.html").Build()).WithPath("en", "/blog/{slug}")
 	// Only where "tr" is supported: collage refuses a path no URL reaches.
 	if s.locales {
 		post.WithPath("tr", "/blog/{slug}")
 	}
-	for _, page := range []*collage.Page{
-		post.Build(),
-		collage.NewPage("broken").WithContent(collage.NewFragment("broken", "p.html").Required().WithData(collage.Load(
-			func(context.Context, *collage.RenderContext) (string, error) {
-				return "", errors.New("backend down")
-			})).Build()).WithPath("en", "/broken").Build(),
-	} {
-		if err := app.RegisterPage(page); err != nil {
-			t.Fatal(err)
-		}
+	options := []collagetest.SiteOption{
+		collagetest.WithoutHome(),
+		collagetest.WithTemplates(map[string]string{"p.html": `<p>page</p>`}),
+		collagetest.WithConfig(func(cfg *collage.Config) {
+			if s.locales {
+				cfg.Locale = collage.LocaleConfig{Default: "en", Supported: []string{"en", "tr"}}
+			}
+			if s.tracer {
+				cfg.Observability.Tracer = p
+			}
+		}),
+		collagetest.WithRegister(
+			post.Build(),
+			collage.NewPage("broken").WithContent(collage.NewFragment("broken", "p.html").Required().WithData(collage.Load(
+				func(context.Context, *collage.RenderContext) (string, error) {
+					return "", errors.New("backend down")
+				})).Build()).WithPath("en", "/broken").Build(),
+			collage.NewDocument("feed", "application/xml").AtRoot("/feed.xml").WithBody([]byte("<feed/>")).Build(),
+		),
 	}
-	if err := app.RegisterDocument(collage.NewDocument("feed", "application/xml").AtRoot("/feed.xml").WithBody([]byte("<feed/>")).Build()); err != nil {
-		t.Fatal(err)
+	if s.plugin {
+		options = append(options, collagetest.WithPlugins(p))
+	}
+	if s.config != "" {
+		options = append(options, collagetest.WithPluginConfig(otel.Name, s.config))
 	}
 	if s.handler != nil {
-		if err := app.Handle("/raw/", s.handler); err != nil {
-			t.Fatal(err)
-		}
+		options = append(options, collagetest.WithSetup(func(app *collage.App) error {
+			return app.Handle("/raw/", s.handler)
+		}))
 	}
-	return app.Handler(), rec
+	return collagetest.NewSite(t, options...).App.Handler(), rec
 }
 
 func get(h http.Handler, path string, header ...string) *httptest.ResponseRecorder {
@@ -302,8 +292,21 @@ func TestSkip(t *testing.T) {
 }
 
 func TestBadConfigStopsStartup(t *testing.T) {
-	h, _ := site(t, setup{plugin: true, config: `{"skip": ["blog"]}`})
-	if code := get(h, "/blog/x").Code; code != http.StatusServiceUnavailable {
+	// Built by hand: it asserts the 503 of an application whose plugin failed to
+	// Init, and NewSite stops the test at that failure instead.
+	app, err := collage.New(&collage.Config{
+		Server:       collage.ServerConfig{Host: "localhost", Port: 3000},
+		Template:     collage.TemplateConfig{FS: fstest.MapFS{"t/p.html": {Data: []byte(`<p>page</p>`)}}, Root: "t"},
+		Plugins:      []collage.Plugin{otel.New(otel.Options{})},
+		PluginConfig: map[string]json.RawMessage{otel.Name: json.RawMessage(`{"skip": ["blog"]}`)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.RegisterPage(collage.NewPage("post").WithContent(collage.NewFragment("post", "p.html").Build()).WithPath("en", "/blog/{slug}").Build()); err != nil {
+		t.Fatal(err)
+	}
+	if code := get(app.Handler(), "/blog/x").Code; code != http.StatusServiceUnavailable {
 		t.Errorf("status %d, want 503", code)
 	}
 }
