@@ -314,11 +314,16 @@ func spanName(method, route string) string {
 // route is what the request resolved to, as http.route, and the attributes that
 // say so: the pattern the page, document or action was registered with, with the
 // locale prefix when the request's path had one; a mount's or a handler's
-// prefix. An unresolved request — a 404 — has none.
+// prefix. An unresolved request — a 404 — has none, and neither has one collage
+// refused before routing (a dirty path, redirected or answered 404): it carries
+// only its kind, so a probe never names a span.
 func route(ctx context.Context, path string) (string, []attribute.KeyValue) {
 	info := collage.RouteInfo(ctx)
 	if info.Kind == "" {
 		return "", nil
+	}
+	if info.Kind == collage.RouteKindRejected {
+		return "", []attribute.KeyValue{attribute.String("collage.route.kind", info.Kind)}
 	}
 	pattern := info.Pattern
 	if pattern == "" {
