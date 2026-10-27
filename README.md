@@ -13,7 +13,7 @@ app, err := collage.New(&collage.Config{
 })
 ```
 
-Requires collage v0.61.0 or later.
+Requires collage v0.79.0 or later.
 
 ## Both lines
 
@@ -200,6 +200,9 @@ A skip prefix that does not begin with `/`, and a `trustIncoming` other than `""
 
 ### Changed in v0.4.0
 
+- Requires collage v0.79.0. A request collage refused before routing (a dirty
+  path, redirected or answered 404) names no span: it carries only
+  `collage.route.kind`.
 - **Behaviour change: a client's trace context is no longer continued by
   default.** It is continued only on a request through one of
   `Server.TrustedProxies`; any other request starts a new trace that links to the

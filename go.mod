@@ -3,10 +3,10 @@
 // trace a request arrives with, so every span of the request is one trace.
 module github.com/Elagoht/collage-otel
 
-go 1.26
+go 1.26.10
 
 require (
-	github.com/Elagoht/collage v0.61.4
+	github.com/Elagoht/collage v0.79.0
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/sdk v1.46.0
 	go.opentelemetry.io/otel/trace v1.46.0
