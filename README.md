@@ -42,7 +42,7 @@ server span's context — so `collage.http` is its child, and the render and eve
 fragment nest under that:
 
 ```
-GET /blog/{slug}          server   ← child of the caller's span
+GET /blog/{slug}          server   ← child of a trusted caller's span
 └─ collage.http
    └─ collage.render
       ├─ collage.fragment

@@ -191,7 +191,8 @@ func (s span) RecordError(err error) {
 func (s span) End() { s.Span.End() }
 
 // OnRequest starts the request's server span, as a child of the caller's span
-// when the headers carry one, and returns its context: collage opens its own
+// when the headers carry one and the caller is trusted (TrustIncoming) — a
+// root linked to it otherwise — and returns its context: collage opens its own
 // request span under it. The function it returns ends the span once the response
 // is written, named for the route the request resolved to.
 //
