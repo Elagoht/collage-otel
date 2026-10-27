@@ -11,7 +11,9 @@
 // plugin it continues the trace a request arrives with: the trace context in its
 // headers is read with the propagator, and the request gets a server span that is a
 // child of the caller's, so a request that crossed three services is one trace
-// rather than three.
+// rather than three. By default only a request through one of the application's
+// Server.TrustedProxies is continued; any other starts a new trace linked to the
+// caller's (Options.TrustIncoming).
 //
 // # One trace per request
 //
@@ -63,7 +65,29 @@ type Options struct {
 	// collage.http span is still started, as a trace of its own, when this
 	// package is collage's Tracer.
 	Skip []string `json:"skip"`
+	// TrustIncoming says whose trace context is continued. "" (the default)
+	// continues it only on a request that came through one of the application's
+	// Server.TrustedProxies — so with none listed, no one's; "always" continues
+	// anyone's, for a service only other services reach; "never" continues no
+	// one's. A trace context that is not continued is recorded as a link on a
+	// new trace, and its baggage is dropped: a client must not decide what is
+	// sampled, nor plant the site's spans in a trace of its choosing.
+	TrustIncoming Trust `json:"trustIncoming"`
 }
+
+// Trust says whose incoming trace context is continued. In configuration it is
+// "", "always" or "never".
+type Trust string
+
+const (
+	// TrustProxies continues the trace context of a request that came through
+	// one of Server.TrustedProxies, and no other. It is the default.
+	TrustProxies Trust = ""
+	// TrustAlways continues every request's trace context.
+	TrustAlways Trust = "always"
+	// TrustNever continues no request's trace context.
+	TrustNever Trust = "never"
+)
 
 // Plugin is collage's Tracer and the request hook that continues a request's
 // trace.
@@ -84,7 +108,7 @@ func New(opts Options) *Plugin {
 }
 
 func (p *Plugin) Name() string                   { return Name }
-func (p *Plugin) Version() string                { return "0.3.0" }
+func (p *Plugin) Version() string                { return "0.4.0" }
 func (p *Plugin) Shutdown(context.Context) error { return nil }
 
 var (
@@ -108,6 +132,11 @@ func (p *Plugin) Init(_ context.Context, host collage.Host) error {
 		skip = append(skip, strings.TrimSuffix(prefix, "/"))
 	}
 	cfg.Skip = skip
+	switch cfg.TrustIncoming {
+	case TrustProxies, TrustAlways, TrustNever:
+	default:
+		return fmt.Errorf("otel: trustIncoming %q must be \"\", \"always\" or \"never\"", cfg.TrustIncoming)
+	}
 	p.opts = cfg
 	return nil
 }
@@ -176,22 +205,25 @@ func (p *Plugin) OnRequest(r *http.Request) (context.Context, func(status int)) 
 	if p.skipped(r.URL.Path) {
 		return r.Context(), nil
 	}
-	ctx := p.propagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+	ctx, start := p.incoming(r)
+	method := knownMethod(r.Method)
+	attrs := []attribute.KeyValue{
+		attribute.String("http.request.method", method),
+		attribute.String("url.path", r.URL.Path),
+		attribute.String("url.scheme", scheme(r)),
+		attribute.String("user_agent.original", r.UserAgent()),
+	}
+	if method != r.Method {
+		attrs = append(attrs, attribute.String("http.request.method_original", r.Method))
+	}
 	// Named for the method until the route is known: a span named for its path
 	// would be a new name for every URL, which is what trace stores group by.
-	ctx, span := p.tracer.Start(ctx, r.Method,
-		trace.WithSpanKind(trace.SpanKindServer),
-		trace.WithAttributes(
-			attribute.String("http.request.method", r.Method),
-			attribute.String("url.path", r.URL.Path),
-			attribute.String("url.scheme", scheme(r)),
-			attribute.String("user_agent.original", r.UserAgent()),
-		),
-	)
-	method, path := r.Method, r.URL.Path
+	ctx, span := p.tracer.Start(ctx, spanName(method, ""),
+		append(start, trace.WithSpanKind(trace.SpanKindServer), trace.WithAttributes(attrs...))...)
+	path := r.URL.Path
 	return ctx, func(status int) {
 		if route, attrs := route(ctx, path); route != "" {
-			span.SetName(method + " " + route)
+			span.SetName(spanName(method, route))
 			span.SetAttributes(attrs...)
 		}
 		span.SetAttributes(attribute.Int("http.response.status_code", status))
@@ -202,6 +234,80 @@ func (p *Plugin) OnRequest(r *http.Request) (context.Context, func(status int)) 
 		}
 		span.End()
 	}
+}
+
+// incoming returns the context the server span starts from, and how it starts.
+//
+// A trusted request's trace context is extracted into the request's context, and
+// the server span is the caller's span's child. Any other request's is
+// extracted into a context of its own, to read the caller's span from: the
+// server span is the root of a new trace that links to it, so the sampler
+// decides afresh and the client's trace id names nothing here — and the
+// client's baggage, extracted with it, is dropped.
+func (p *Plugin) incoming(r *http.Request) (context.Context, []trace.SpanStartOption) {
+	if p.trusts(r) {
+		return p.propagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header)), nil
+	}
+	start := []trace.SpanStartOption{trace.WithNewRoot()}
+	remote := trace.SpanContextFromContext(p.propagator().Extract(context.Background(), propagation.HeaderCarrier(r.Header)))
+	if remote.IsValid() {
+		start = append(start, trace.WithLinks(trace.Link{SpanContext: remote}))
+	}
+	return r.Context(), start
+}
+
+// trusts reports whether r's trace context is continued, as TrustIncoming says.
+func (p *Plugin) trusts(r *http.Request) bool {
+	switch p.opts.TrustIncoming {
+	case TrustAlways:
+		return true
+	case TrustNever:
+		return false
+	}
+	return fromTrustedProxy(r)
+}
+
+// fromTrustedProxy reports whether r's connection comes from one of the
+// application's Server.TrustedProxies.
+//
+// collage does not say so directly, but collage.ClientIP does by what it does:
+// it reads X-Forwarded-For only from a trusted proxy, and an entry there that is
+// not an address leaves the client unknown. So the same connection is asked about
+// with an X-Forwarded-For of "unknown": the answer is the connection's own
+// address from anyone else, and no address from a trusted proxy. The question is
+// asked of a request made for it, so r's own headers are neither read nor changed.
+func fromTrustedProxy(r *http.Request) bool {
+	probe := (&http.Request{RemoteAddr: r.RemoteAddr, Header: http.Header{}}).WithContext(r.Context())
+	if !collage.ClientIP(probe).IsValid() {
+		return false
+	}
+	probe.Header.Set("X-Forwarded-For", "unknown")
+	return !collage.ClientIP(probe).IsValid()
+}
+
+// knownMethod is method when it is one of RFC 9110's, or PATCH, and "_OTHER"
+// otherwise, as OpenTelemetry's HTTP conventions ask. net/http accepts any token
+// as a method, so without it a client inventing methods would invent span names.
+func knownMethod(method string) string {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodDelete,
+		http.MethodConnect, http.MethodOptions, http.MethodTrace, http.MethodPatch:
+		return method
+	}
+	return "_OTHER"
+}
+
+// spanName is the server span's name: the method and the route, the method alone
+// before the route is known or when there is none. An unknown method is "HTTP",
+// as OpenTelemetry's HTTP conventions name it.
+func spanName(method, route string) string {
+	if method == "_OTHER" {
+		method = "HTTP"
+	}
+	if route == "" {
+		return method
+	}
+	return method + " " + route
 }
 
 // route is what the request resolved to, as http.route, and the attributes that

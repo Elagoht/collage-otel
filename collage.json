@@ -14,6 +14,15 @@
         "items": {
           "type": "string"
         }
+      },
+      "trustIncoming": {
+        "type": "string",
+        "description": "TrustIncoming says whose trace context is continued. \"\" (the default) continues it only on a request that came through one of the application's Server.TrustedProxies — so with none listed, no one's; \"always\" continues anyone's, for a service only other services reach; \"never\" continues no one's. A trace context that is not continued is recorded as a link on a new trace, and its baggage is dropped: a client must not decide what is sampled, nor plant the site's spans in a trace of its choosing.",
+        "enum": [
+          "",
+          "always",
+          "never"
+        ]
       }
     },
     "additionalProperties": false

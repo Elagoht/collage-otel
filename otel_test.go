@@ -104,7 +104,8 @@ func attr(s sdktrace.ReadOnlySpan, key string) (string, bool) {
 // a child of the caller's remote span, and collage's own spans nest under it —
 // collage.http first, then the render and the fragment.
 func TestContinuesTheIncomingTrace(t *testing.T) {
-	h, rec := site(t, setup{tracer: true, plugin: true})
+	// "always": the request comes from no trusted proxy (see trust_test.go).
+	h, rec := site(t, setup{tracer: true, plugin: true, config: `{"trustIncoming": "always"}`})
 	if code := get(h, "/blog/hello", "traceparent", traceparent).Code; code != http.StatusOK {
 		t.Fatalf("status %d", code)
 	}
@@ -273,7 +274,7 @@ func TestTracerAlone(t *testing.T) {
 // As a plugin alone, the server span continues the caller's trace, and is the
 // only span.
 func TestPluginAlone(t *testing.T) {
-	h, rec := site(t, setup{plugin: true})
+	h, rec := site(t, setup{plugin: true, config: `{"trustIncoming": "always"}`})
 	get(h, "/blog/hello", "traceparent", traceparent)
 	ended := rec.Ended()
 	if len(ended) != 1 || ended[0].Name() != "GET /blog/{slug}" || ended[0].SpanContext().TraceID().String() != "4bf92f3577b34da6a3ce929d0e0e4736" {
